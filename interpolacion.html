@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Splines Cúbicos Paramétricos - Contorno de Ave</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f5f7fb; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        h1, h2, h3 { color: #1e293b; }
+        .flex-container { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 20px; }
+        .panel { flex: 1; min-width: 450px; }
+        input[type="file"] { padding: 10px; background: #e2e8f0; border-radius: 6px; width: 100%; box-sizing: border-box; margin-bottom: 10px; }
+        canvas { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; width: 100%; height: auto; cursor: pointer; }
+        .log-box { background: #0f172a; color: #38bdf8; padding: 20px; border-radius: 8px; font-family: 'Courier New', Courier, monospace; height: 600px; overflow-y: auto; font-size: 13px; line-height: 1.6; scroll-behavior: smooth; }
+        .step-title { color: #f43f5e; font-weight: bold; margin-top: 15px; border-bottom: 1px solid #334155; padding-bottom: 5px; }
+        .formula { color: #a7f3d0; }
+        .success { color: #34d399; }
+        .warn { color: #fbbf24; }
+        
+        /* Clase para resaltar el tramo seleccionado en la bitácora */
+        .highlight-block {
+            background-color: #1e293b;
+            border-left: 4px solid #f43f5e;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 4px;
+            transition: background-color 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Interpolación por Splines Cúbicos Paramétricos</h1>
+    <p><strong>Interactividad activada:</strong> Carga tu archivo TXT. Ahora puedes <strong>hacer clic en cualquier parte de la curva verde</strong> en el gráfico; el sistema identificará el tramo exacto, lo resaltará visualmente en fucsia y desplazará automáticamente la bitácora de la derecha hacia las ecuaciones de ese segmento.</p>
+    
+    <input type="file" id="fileInput" accept=".txt">
+
+    <div class="flex-container">
+        <div class="panel">
+            <h2>Visualización del Contorno Real del Ave</h2>
+            <canvas id="canvas" width="550" height="550"></canvas>
+        </div>
+        
+        <div class="panel">
+            <h2>Bitácora Matemática de Sistemas Paralelos (X y Y)</h2>
+            <div id="log" class="log-box">Esperando archivo de puntos...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Variables globales para mantener el estado del modelo y permitir la interacción
+let globalPoints = [];
+let globalSplinesX = [];
+let globalSplinesY = [];
+let selectedTramo = null; 
+
+// Límites de mapeo globales para el Canvas
+let gMinX, gMaxX, gMinY, gMaxY;
+
+document.getElementById('fileInput').addEventListener('change', handleFile);
+document.getElementById('canvas').addEventListener('click', handleCanvasClick);
+
+function handleFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(evt) { processData(evt.target.result); };
+    reader.readAsText(file);
+}
+
+function logClear() { document.getElementById('log').innerHTML = ''; }
+function log(msg, className = '', id = '') {
+    const logBox = document.getElementById('log');
+    const idAttr = id ? `id="${id}"` : '';
+    logBox.innerHTML += className ? `<div ${idAttr} class="${className}">${msg}</div>` : `<div ${idAttr}>${msg}</div>`;
+}
+
+function processData(text) {
+    logClear();
+    selectedTramo = null; // Reiniciar selección
+    log("=== INICIANDO PARAMETRIZACIÓN DEL CONTORNO ===", "step-title");
+    
+    let points = [];
+    const lines = text.split('\n');
+    for (let line of lines) {
+        line = line.trim();
+        if (line === '') continue;
+        let parts = line.split(/[\s,]+/);
+        if (parts.length >= 2) {
+            let x = parseFloat(parts[0]);
+            let y = parseFloat(parts[1]);
+            if (!isNaN(x) && !isNaN(y)) points.push({x: x, y: y});
+        }
+    }
+
+    if (points.length < 3) {
+        log("Error: Se necesitan al menos 3 puntos.", "step-title");
+        return;
+    }
+
+    log(`Puntos cargados en orden secuencial original (Total: ${points.length}):`, "success");
+    
+    const n = points.length - 1;
+    let t = [];
+    for (let i = 0; i <= n; i++) t.push(i);
+
+    log("PASO 1: Establecer el parámetro t (tiempo/secuencia de trazado)", "step-title");
+    log("PASO 2: Plantear Sistemas Matriciales Paralelos para X(t) y Y(t)", "step-title");
+
+    let A = Array.from({ length: n + 1 }, () => new Array(n + 1).fill(0));
+    let B_x = new Array(n + 1).fill(0);
+    let B_y = new Array(n + 1).fill(0);
+
+    A[0][0] = 1; B_x[0] = 0; B_y[0] = 0;
+    A[n][n] = 1; B_x[n] = 0; B_y[n] = 0;
+
+    for (let i = 1; i < n; i++) {
+        A[i][i-1] = 1; A[i][i] = 4; A[i][i+1] = 1;
+        B_x[i] = 6 * (points[i+1].x - 2 * points[i].x + points[i-1].x);
+        B_y[i] = 6 * (points[i+1].y - 2 * points[i].y + points[i-1].y);
+    }
+
+    log("PASO 3: Resolviendo sistemas lineales (Algoritmo de Thomas)", "step-title");
+    let A_copy = JSON.parse(JSON.stringify(A));
+    let M_x = solveTridiagonal(A, B_x);
+    let M_y = solveTridiagonal(A_copy, B_y);
+
+    // PASO 4: Deducción de polinomios usando la forma Sj(x) = aj + bj(x-xj) + cj(x-xj)^2 + dj(x-xj)^3
+    log("PASO 4: Deducción de polinomios de tercer grado (Forma Estándar)", "step-title");
+    log("Utilizando la ecuación: <br><span class='formula'>Sj(t) = aj + bj(t - tj) + cj(t - tj)^2 + dj(t - tj)^3</span>");
+
+    let splinesX = [];
+    let splinesY = [];
+    let polinomiosHTML = `<div class="step-title">Ecuaciones de los Polinomios (Basadas en Sj(x))</div>`;
+
+    for (let j = 0; j < n; j++) {
+        // En nuestro caso (Spline Natural con h=1), los coeficientes se derivan así:
+        
+        // --- Para el eje X ---
+        let aj_x = points[j].x;
+        let cj_x = M_x[j] / 2;
+        let dj_x = (M_x[j+1] - M_x[j]) / 6;
+        let bj_x = (points[j+1].x - points[j].x) - (M_x[j+1] + 2 * M_x[j]) / 6;
+
+        // --- Para el eje Y ---
+        let aj_y = points[j].y;
+        let cj_y = M_y[j] / 2;
+        let dj_y = (M_y[j+1] - M_y[j]) / 6;
+        let bj_y = (points[j+1].y - points[j].y) - (M_y[j+1] + 2 * M_y[j]) / 6;
+
+        splinesX.push({a: aj_x, b: bj_x, c: cj_x, d: dj_x, t_j: j});
+        splinesY.push({a: aj_y, b: bj_y, c: cj_y, d: dj_y, t_j: j});
+
+        polinomiosHTML += `
+        <div id="tramo-info-${j}" class="tramo-bloque">
+            <div style="color: #fbbf24; font-weight: bold; margin-top:10px;">Intervalo j=${j} (t entre ${j} y ${j+1}):</div>
+            <div class="formula">  X_S${j}(t) = ${aj_x.toFixed(4)} + ${bj_x.toFixed(4)}(t-${j}) + ${cj_x.toFixed(4)}(t-${j})² + ${dj_x.toFixed(4)}(t-${j})³</div>
+            <div class="formula">  Y_S${j}(t) = ${aj_y.toFixed(4)} + ${bj_y.toFixed(4)}(t-${j}) + ${cj_y.toFixed(4)}(t-${j})² + ${dj_y.toFixed(4)}(t-${j})³</div>
+            <div style="font-size: 0.85em; opacity: 0.8;">
+                Cálculos realizados:<br>
+                a = Pj = ${aj_x.toFixed(4)}<br>
+                b = (Pj+1 - Pj) - (M_j+1 + 2Mj)/6 = ${bj_x.toFixed(4)}<br>
+                c = Mj / 2 = ${cj_x.toFixed(4)}<br>
+                d = (Mj+1 - Mj) / 6 = ${dj_x.toFixed(4)}
+            </div>
+        </div>`;
+    }
+
+    // Inyectamos el bloque estructurado al log general
+    document.getElementById('log').innerHTML += polinomiosHTML;
+    log("=== CÁLCULOS LOGRADOS EXITOSAMENTE ===", "step-title");
+
+    // Guardar en variables globales para la interacción del mouse
+    globalPoints = points;
+    globalSplinesX = splinesX;
+    globalSplinesY = splinesY;
+
+    calculateCanvasLimits(points);
+    drawParametricSplines();
+}
+
+function solveTridiagonal(A, B) {
+    let m = A.length;
+    for (let i = 0; i < m; i++) {
+        let maxRow = i;
+        for (let k = i + 1; k < m; k++) {
+            if (Math.abs(A[k][i]) > Math.abs(A[maxRow][i])) maxRow = k;
+        }
+        let tempRow = A[i]; A[i] = A[maxRow]; A[maxRow] = tempRow;
+        let tempB = B[i]; B[i] = B[maxRow]; B[maxRow] = tempB;
+
+        for (let k = i + 1; k < m; k++) {
+            let factor = A[k][i] / A[i][i];
+            B[k] -= factor * B[i];
+            for (let j = i; j < m; j++) A[k][j] -= factor * A[i][j];
+        }
+    }
+    let x = new Array(m).fill(0);
+    for (let i = m - 1; i >= 0; i--) {
+        let sum = 0;
+        for (let j = i + 1; j < m; j++) sum += A[i][j] * x[j];
+        x[i] = (B[i] - sum) / A[i][i];
+    }
+    return x;
+}
+
+// Guarda los valores de escalamiento del plano cartesiano
+function calculateCanvasLimits(points) {
+    let minX = Math.min(...points.map(p => p.x));
+    let maxX = Math.max(...points.map(p => p.x));
+    let minY = Math.min(...points.map(p => p.y));
+    let maxY = Math.max(...points.map(p => p.y));
+
+    let rangeX = maxX - minX || 1;
+    let rangeY = maxY - minY || 1;
+    let size = Math.max(rangeX, rangeY);
+    let centerX = (minX + maxX) / 2;
+    let centerY = (minY + maxY) / 2;
+
+    gMinX = centerX - size * 0.55; gMaxX = centerX + size * 0.55;
+    gMinY = centerY - size * 0.55; gMaxY = centerY + size * 0.55;
+}
+
+function mapX(val, w) { return ((val - gMinX) / (gMaxX - gMinX)) * w; }
+function mapY(val, h) { return h - ((val - gMinY) / (gMaxY - gMinY)) * h; }
+
+// Inversión geométrica: de píxeles en pantalla a unidades matemáticas del archivo
+function unmapX(px, w) { return gMinX + (px / w) * (gMaxX - gMinX); }
+function unmapY(py, h) { return gMinY + ((h - py) / h) * (gMaxY - gMinY); }
+
+function drawParametricSplines() {
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // 1. Limpiar el lienzo para el nuevo redibujado
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 2. Dibujar rejilla de fondo (Guía visual)
+    ctx.strokeStyle = '#f1f5f9'; 
+    ctx.lineWidth = 1;
+    for(let i=0; i<=10; i++) {
+        let xPos = (canvas.width / 10) * i;
+        let yPos = (canvas.height / 10) * i;
+        ctx.beginPath(); ctx.moveTo(xPos, 0); ctx.lineTo(xPos, canvas.height); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, yPos); ctx.lineTo(canvas.width, yPos); ctx.stroke();
+    }
+
+    // 3. Dibujar las curvas tramo por tramo
+    for (let i = 0; i < globalSplinesX.length; i++) {
+        let sx = globalSplinesX[i];
+        let sy = globalSplinesY[i];
+        let pasos = 40; // Resolución de la curva dentro del tramo
+        
+        ctx.beginPath();
+        // Estilo: Si el tramo está seleccionado (clic), resaltar en fucsia, si no, verde esmeralda
+        ctx.strokeStyle = (selectedTramo === i) ? '#f43f5e' : '#10b981';
+        ctx.lineWidth = (selectedTramo === i) ? 5 : 3;
+
+        for (let j = 0; j <= pasos; j++) {
+            // dt representa (t - tj). Como nuestro h=1, dt va de 0 a 1.
+            let dt = j / pasos; 
+
+            // IMPLEMENTACIÓN DE TU ECUACIÓN: Sj(x) = aj + bj(x - xj) + cj(x - xj)^2 + dj(x - xj)^3
+            let evalX = sx.a + sx.b * dt + sx.c * Math.pow(dt, 2) + sx.d * Math.pow(dt, 3);
+            let evalY = sy.a + sy.b * dt + sy.c * Math.pow(dt, 2) + sy.d * Math.pow(dt, 3);
+
+            // Convertir coordenadas matemáticas a coordenadas de píxeles en el canvas
+            let canvasX = mapX(evalX, canvas.width);
+            let canvasY = mapY(evalY, canvas.height);
+
+            if (j === 0) {
+                ctx.moveTo(canvasX, canvasY);
+            } else {
+                ctx.lineTo(canvasX, canvasY);
+            }
+        }
+        ctx.stroke();
+    }
+
+    // 4. Dibujar los puntos de control (Nodos del ave)
+    globalPoints.forEach((p, idx) => {
+        // Resaltar los puntos que pertenecen al tramo seleccionado
+        if (selectedTramo !== null && (idx === selectedTramo || idx === selectedTramo + 1)) {
+            ctx.fillStyle = '#f43f5e';
+            ctx.beginPath();
+            ctx.arc(mapX(p.x, canvas.width), mapY(p.y, canvas.height), 6, 0, 2 * Math.PI);
+        } else {
+            ctx.fillStyle = '#ef4444';
+            ctx.beginPath();
+            ctx.arc(mapX(p.x, canvas.width), mapY(p.y, canvas.height), 4, 0, 2 * Math.PI);
+        }
+        ctx.fill();
+    });
+}
+
+// Algoritmo matemático para detectar en qué tramo se hizo clic
+function handleCanvasClick(e) {
+    if (globalSplinesX.length === 0) return;
+
+    const canvas = document.getElementById('canvas');
+    const rect = canvas.getBoundingClientRect();
+    
+    // Obtener coordenadas del clic relativas al lienzo físico de la pantalla
+    let clickPxX = e.clientX - rect.left;
+    let clickPxY = e.clientY - rect.top;
+
+    // Convertir el clic a las unidades de datos del ave
+    let mathX = unmapX(clickPxX, canvas.width);
+    let mathY = unmapY(clickPxY, canvas.height);
+
+    let minDistance = Infinity;
+    let closestTramoIdx = -1;
+
+    // Evaluamos muestras discretas en cada tramo para hallar el punto más cercano al clic
+    for (let i = 0; i < globalSplinesX.length; i++) {
+        let sx = globalSplinesX[i];
+        let sy = globalSplinesY[i];
+        let muestras = 20;
+
+        for (let j = 0; j <= muestras; j++) {
+            let dt = j / muestras;
+            let evalX = sx.a * Math.pow(dt, 3) + sx.b * Math.pow(dt, 2) + sx.c * dt + sx.d;
+            let evalY = sy.a * Math.pow(dt, 3) + sy.b * Math.pow(dt, 2) + sy.c * dt + sy.d;
+
+            // Distancia Euclidiana clásica entre el clic matemático y la curva analizada
+            let dist = Math.sqrt(Math.pow(mathX - evalX, 2) + Math.pow(mathY - evalY, 2));
+            if (dist < minDistance) {
+                minDistance = dist;
+                closestTramoIdx = i;
+            }
+        }
+    }
+
+    // Tolerancia de selección (para evitar capturar clics excesivamente alejados de la silueta)
+    let maxToleranciaUnidades = (gMaxX - gMinX) * 0.05;
+
+    if (closestTramoIdx !== -1 && minDistance < maxToleranciaUnidades) {
+        selectedTramo = closestTramoIdx;
+        
+        // Redibujar el canvas inmediatamente para reflejar el cambio cromático (fucsia)
+        drawParametricSplines();
+
+        // Eliminar resaltados previos en el DOM de la bitácora de texto
+        document.querySelectorAll('.tramo-bloque').forEach(el => el.classList.remove('highlight-block'));
+
+        // Resaltar el nuevo bloque de operaciones matemáticas y hacer el autoscroll suave
+        const targetElement = document.getElementById(`tramo-info-${selectedTramo}`);
+        if (targetElement) {
+            targetElement.classList.add('highlight-block');
+            
+            // Calculamos la posición de scroll interna del contenedor
+            const logBox = document.getElementById('log');
+            logBox.scrollTop = targetElement.offsetTop - logBox.offsetTop - 15;
+        }
+    }
+}
+</script>
+</body>
+</html>
